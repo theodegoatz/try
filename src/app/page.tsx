@@ -208,7 +208,7 @@ export default function Home() {
               {[
                 { label: '1 Seeds', desc: 'Duke · Arizona · Michigan · Florida', color: 'text-yellow-400' },
                 { label: '68 Teams', desc: 'Full field including First Four', color: 'text-blue-400' },
-                { label: 'Gemini / Claude', desc: 'Free or paid AI provider', color: 'text-purple-400' },
+                { label: 'Groq / Claude', desc: 'Free or paid AI provider', color: 'text-purple-400' },
                 { label: 'Live Stream', desc: 'Game-by-game results', color: 'text-emerald-400' },
               ].map(item => (
                 <div key={item.label} className="bg-gray-900/60 rounded-lg p-3 border border-gray-700/50">
@@ -223,39 +223,56 @@ export default function Home() {
               <div className="bg-gray-800/60 px-4 py-2 border-b border-gray-700/60">
                 <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Setup — Pick an AI provider</span>
               </div>
-              <div className="grid md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-gray-700/60">
-                {/* Free option */}
+              <div className="grid md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-gray-700/60">
+                {/* Groq - Best free option */}
                 <div className="p-4">
                   <div className="flex items-center gap-2 mb-2">
-                    <span className="text-xs font-bold text-emerald-400 uppercase tracking-wide bg-emerald-900/30 px-2 py-0.5 rounded-full border border-emerald-700/40">Free</span>
-                    <span className="text-sm font-semibold text-white">Google Gemini</span>
+                    <span className="text-xs font-bold text-emerald-400 uppercase tracking-wide bg-emerald-900/30 px-2 py-0.5 rounded-full border border-emerald-700/40">Free ★ Best</span>
                   </div>
+                  <div className="text-sm font-semibold text-white mb-2">Groq</div>
                   <p className="text-xs text-gray-400 mb-3 leading-relaxed">
-                    Get a free API key — no billing required. 1,500 requests/day, plenty for a full 67-game simulation.
+                    No credit card. ~30 req/min. Full 67-game sim in under 3 minutes.
                   </p>
                   <ol className="text-xs text-gray-400 space-y-1.5">
-                    <li className="flex gap-2"><span className="text-gray-600 flex-shrink-0">1.</span><span>Go to <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-blue-400 hover:underline">aistudio.google.com/app/apikey</a></span></li>
-                    <li className="flex gap-2"><span className="text-gray-600 flex-shrink-0">2.</span><span>Click <span className="text-white">Create API key</span> (free, no credit card)</span></li>
+                    <li className="flex gap-2"><span className="text-gray-600 flex-shrink-0">1.</span><span>Go to <a href="https://console.groq.com" target="_blank" rel="noreferrer" className="text-blue-400 hover:underline">console.groq.com</a></span></li>
+                    <li className="flex gap-2"><span className="text-gray-600 flex-shrink-0">2.</span><span>Sign up free, create an API Key</span></li>
                     <li className="flex gap-2"><span className="text-gray-600 flex-shrink-0">3.</span><span>Add to <code className="text-gray-300 bg-gray-800 px-1 rounded">.env.local</code>:</span></li>
                   </ol>
                   <div className="mt-2 bg-gray-900 rounded-lg p-2 border border-gray-700/50">
-                    <code className="text-xs text-emerald-300">GEMINI_API_KEY=your_key_here</code>
+                    <code className="text-xs text-emerald-300">GROQ_API_KEY=your_key_here</code>
                   </div>
                 </div>
 
-                {/* Paid option */}
-                <div className="p-4 opacity-80">
+                {/* Gemini */}
+                <div className="p-4 opacity-75">
                   <div className="flex items-center gap-2 mb-2">
-                    <span className="text-xs font-bold text-blue-400 uppercase tracking-wide bg-blue-900/30 px-2 py-0.5 rounded-full border border-blue-700/40">Paid</span>
-                    <span className="text-sm font-semibold text-white">Anthropic Claude</span>
+                    <span className="text-xs font-bold text-yellow-500 uppercase tracking-wide bg-yellow-900/20 px-2 py-0.5 rounded-full border border-yellow-700/40">Free (limited)</span>
                   </div>
+                  <div className="text-sm font-semibold text-white mb-2">Google Gemini</div>
                   <p className="text-xs text-gray-400 mb-3 leading-relaxed">
-                    Uses claude-haiku-4-5. Full 67-game simulation costs ~$0.03.
+                    Free key from Google AI Studio. ~20 req/day on free tier.
                   </p>
                   <ol className="text-xs text-gray-400 space-y-1.5">
-                    <li className="flex gap-2"><span className="text-gray-600 flex-shrink-0">1.</span><span>Go to <a href="https://console.anthropic.com/" target="_blank" rel="noreferrer" className="text-blue-400 hover:underline">console.anthropic.com</a></span></li>
-                    <li className="flex gap-2"><span className="text-gray-600 flex-shrink-0">2.</span><span>Create an account and add billing</span></li>
-                    <li className="flex gap-2"><span className="text-gray-600 flex-shrink-0">3.</span><span>Add to <code className="text-gray-300 bg-gray-800 px-1 rounded">.env.local</code>:</span></li>
+                    <li className="flex gap-2"><span className="text-gray-600 flex-shrink-0">1.</span><span><a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-blue-400 hover:underline">aistudio.google.com/app/apikey</a></span></li>
+                    <li className="flex gap-2"><span className="text-gray-600 flex-shrink-0">2.</span><span>Create API key, no billing needed</span></li>
+                  </ol>
+                  <div className="mt-2 bg-gray-900 rounded-lg p-2 border border-gray-700/50">
+                    <code className="text-xs text-yellow-300">GEMINI_API_KEY=your_key_here</code>
+                  </div>
+                </div>
+
+                {/* Anthropic */}
+                <div className="p-4 opacity-75">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-xs font-bold text-blue-400 uppercase tracking-wide bg-blue-900/30 px-2 py-0.5 rounded-full border border-blue-700/40">Paid</span>
+                  </div>
+                  <div className="text-sm font-semibold text-white mb-2">Anthropic Claude</div>
+                  <p className="text-xs text-gray-400 mb-3 leading-relaxed">
+                    Claude Haiku. Full 67-game sim costs ~$0.03.
+                  </p>
+                  <ol className="text-xs text-gray-400 space-y-1.5">
+                    <li className="flex gap-2"><span className="text-gray-600 flex-shrink-0">1.</span><span><a href="https://console.anthropic.com/" target="_blank" rel="noreferrer" className="text-blue-400 hover:underline">console.anthropic.com</a></span></li>
+                    <li className="flex gap-2"><span className="text-gray-600 flex-shrink-0">2.</span><span>Create account, add billing</span></li>
                   </ol>
                   <div className="mt-2 bg-gray-900 rounded-lg p-2 border border-gray-700/50">
                     <code className="text-xs text-blue-300">ANTHROPIC_API_KEY=your_key_here</code>

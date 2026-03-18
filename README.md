@@ -10,31 +10,35 @@ An AI-powered 2026 NCAA Tournament bracket simulation using real KenPom statisti
 npm install
 ```
 
-### 2. Get an API key — FREE option available
+### 2. Get an API key
 
-**Option A — Free (Google Gemini):**
-1. Go to [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)
-2. Click **Create API key** — no credit card, no billing required
-3. Free tier gives you 1,500 requests/day and 1M tokens/day — more than enough for a full 67-game simulation
+**Option A — FREE and recommended: Groq**
+No credit card, no billing. ~30 requests/minute — enough to run a full 67-game simulation in under 3 minutes.
+
+1. Go to [console.groq.com](https://console.groq.com) and sign up (free)
+2. Create an API key under **API Keys**
 
 ```bash
 cp .env.local.example .env.local
 # Edit .env.local:
+GROQ_API_KEY=your_key_here
+```
+
+**Option B — Free (limited): Google Gemini**
+Get a key from [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey). Note: the free tier has a ~20 requests/day cap for some model tiers, which may limit you to a partial simulation.
+
+```
 GEMINI_API_KEY=your_key_here
 ```
 
-**Option B — Paid (Anthropic Claude):**
-1. Go to [console.anthropic.com](https://console.anthropic.com/)
-2. Add billing and create an API key
-3. A full 67-game simulation costs roughly **$0.03** using claude-haiku-4-5
+**Option C — Paid: Anthropic Claude**
+Uses claude-haiku-4-5. Full 67-game simulation costs ~$0.03.
 
-```bash
-cp .env.local.example .env.local
-# Edit .env.local:
+```
 ANTHROPIC_API_KEY=your_key_here
 ```
 
-The app auto-detects which key you have — just set one and it works.
+The app auto-detects whichever key is present (priority: Groq > Anthropic > Gemini).
 
 ### 3. Run
 

@@ -1,13 +1,14 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import Groq from 'groq-sdk';
 import { Team, Matchup, BracketState, RoundName, AIGameResult, SimulationEvent } from '@/types';
 import { ensembleWinProbability, getQualitativeEdge, getCalibrationNudge, isUpset } from './probability';
 import { updateBracketAfterGame } from './bracket';
 
 // Provider detection — use whichever key is available
-// Gemini is free at https://aistudio.google.com/app/apikey
-// Anthropic at https://console.anthropic.com/
-function getProvider(): 'anthropic' | 'gemini' | null {
+// Priority: Groq (free, best limits) > Anthropic (paid) > Gemini (free but low daily limit)
+function getProvider(): 'groq' | 'anthropic' | 'gemini' | null {
+  if (process.env.GROQ_API_KEY) return 'groq';
   if (process.env.ANTHROPIC_API_KEY) return 'anthropic';
   if (process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_KEY) return 'gemini';
   return null;
@@ -129,7 +130,7 @@ async function simulateWithAnthropic(prompt: string, team1: Team, team2: Team): 
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   const response = await client.messages.create({
     model: 'claude-haiku-4-5',
-    max_tokens: 400,
+    max_tokens: 600,
     temperature: 0.7,
     messages: [{ role: 'user', content: prompt }],
   });
@@ -139,21 +140,75 @@ async function simulateWithAnthropic(prompt: string, team1: Team, team2: Team): 
   return parseAIResponse(content.text, team1, team2);
 }
 
+// Small delay between Gemini calls to avoid burst rate limits
+const GEMINI_MIN_DELAY_MS = 1200; // 1.2s between calls (~50 RPM)
+let lastGeminiCallAt = 0;
+
+async function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function simulateWithGemini(prompt: string, team1: Team, team2: Team): Promise<AIGameResult> {
+  // Enforce rate limit
+  const now = Date.now();
+  const elapsed = now - lastGeminiCallAt;
+  if (elapsed < GEMINI_MIN_DELAY_MS) {
+    await sleep(GEMINI_MIN_DELAY_MS - elapsed);
+  }
+  lastGeminiCallAt = Date.now();
+
   const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_KEY || '';
   const genAI = new GoogleGenerativeAI(apiKey);
 
   const model = genAI.getGenerativeModel({
-    model: 'gemini-2.0-flash',
+    model: 'gemini-flash-lite-latest',
     generationConfig: {
       temperature: 0.7,
-      maxOutputTokens: 400,
+      maxOutputTokens: 1024,
       responseMimeType: 'application/json',
     },
   });
 
-  const result = await model.generateContent(prompt);
-  const text = result.response.text();
+  // Retry up to 3 times with exponential backoff on 429
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const result = await model.generateContent(prompt);
+      const text = result.response.text();
+      return parseAIResponse(text, team1, team2);
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      const is429 = lastError.message.includes('429') || lastError.message.includes('quota') || lastError.message.includes('RESOURCE_EXHAUSTED');
+      if (is429 && attempt < 2) {
+        const backoff = GEMINI_MIN_DELAY_MS * Math.pow(2, attempt + 1);
+        await sleep(backoff);
+        lastGeminiCallAt = Date.now();
+      } else {
+        throw lastError;
+      }
+    }
+  }
+  throw lastError!;
+}
+
+async function simulateWithGroq(prompt: string, team1: Team, team2: Team): Promise<AIGameResult> {
+  const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
+  const response = await groq.chat.completions.create({
+    model: 'llama-3.3-70b-versatile',
+    messages: [
+      {
+        role: 'system',
+        content: 'You are an expert NCAA Tournament analyst. Always respond with valid JSON only, no markdown fences.',
+      },
+      { role: 'user', content: prompt },
+    ],
+    temperature: 0.7,
+    max_tokens: 600,
+    response_format: { type: 'json_object' },
+  });
+
+  const text = response.choices[0]?.message?.content || '';
   return parseAIResponse(text, team1, team2);
 }
 
@@ -168,12 +223,19 @@ export async function simulateGame(
   const prompt = buildGamePrompt(team1, team2, round, venue, upsetCount, totalGames);
   const provider = getProvider();
 
-  if (provider === 'anthropic') {
+  if (provider === 'groq') {
+    return simulateWithGroq(prompt, team1, team2);
+  } else if (provider === 'anthropic') {
     return simulateWithAnthropic(prompt, team1, team2);
   } else if (provider === 'gemini') {
     return simulateWithGemini(prompt, team1, team2);
   } else {
-    throw new Error('No AI provider configured. Set ANTHROPIC_API_KEY or GEMINI_API_KEY in your .env.local file.');
+    throw new Error(
+      'No AI provider configured. Options:\n' +
+      '1. FREE (recommended): Get a Groq key at console.groq.com — set GROQ_API_KEY in .env.local\n' +
+      '2. FREE (limited): Get a Gemini key at aistudio.google.com — set GEMINI_API_KEY in .env.local\n' +
+      '3. Paid: Get an Anthropic key at console.anthropic.com — set ANTHROPIC_API_KEY in .env.local'
+    );
   }
 }
 

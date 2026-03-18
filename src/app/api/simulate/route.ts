@@ -13,8 +13,9 @@ export async function GET(_request: NextRequest) {
   if (!provider) {
     const msg = [
       'No AI provider configured.',
-      'Option 1 (FREE): Get a Google Gemini key at https://aistudio.google.com/app/apikey — add GEMINI_API_KEY to .env.local',
-      'Option 2 (Paid): Get an Anthropic key at https://console.anthropic.com — add ANTHROPIC_API_KEY to .env.local',
+      'Option 1 — FREE (best): Get a Groq key at https://console.groq.com — no credit card, add GROQ_API_KEY to .env.local',
+      'Option 2 — FREE (limited): Get a Gemini key at https://aistudio.google.com/app/apikey — add GEMINI_API_KEY to .env.local',
+      'Option 3 — Paid: Get an Anthropic key at https://console.anthropic.com — add ANTHROPIC_API_KEY to .env.local',
     ].join(' ');
 
     return new Response(
@@ -43,7 +44,11 @@ export async function GET(_request: NextRequest) {
 
         send({
           type: 'status',
-          message: `Bracket initialized. Starting simulation with ${provider === 'gemini' ? 'Google Gemini 2.0 Flash (free)' : 'Anthropic Claude Haiku'}...`,
+          message: `Bracket initialized. Starting simulation with ${
+  provider === 'groq' ? 'Groq Llama 3.3 70B (free)'
+  : provider === 'gemini' ? 'Google Gemini Flash Lite (free)'
+  : 'Anthropic Claude Haiku'
+}...`,
           bracketState: bracket,
         });
 
