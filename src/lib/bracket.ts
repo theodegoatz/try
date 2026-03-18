@@ -70,15 +70,15 @@ function buildRegionRoundOf64(region: Region, firstFourWinners: Map<string, Team
   };
 
   ROUND_OF_64_PAIRINGS.forEach(([highSeed, lowSeed], idx) => {
-    let team1 = getTeamBySeedAndRegion(highSeed, region);
+    const team1 = getTeamBySeedAndRegion(highSeed, region);
     let team2 = getTeamBySeedAndRegion(lowSeed, region);
 
     // Handle First Four winners filling in
-    if (region === 'West' && highSeed === 11) {
-      team1 = firstFourWinners.get('first-four-west-11') || team1;
+    if (region === 'West' && lowSeed === 11) {
+      team2 = firstFourWinners.get('first-four-west-11') || team2;
     }
-    if (region === 'Midwest' && highSeed === 11) {
-      team1 = firstFourWinners.get('first-four-midwest-11') || team1;
+    if (region === 'Midwest' && lowSeed === 11) {
+      team2 = firstFourWinners.get('first-four-midwest-11') || team2;
     }
     if (region === 'Midwest' && lowSeed === 16) {
       team2 = firstFourWinners.get('first-four-midwest-16') || team2;
@@ -308,18 +308,18 @@ function buildAdvancementMap(bracket: BracketState): Record<string, { targetMatc
 
   // First Four -> Round of 64
   const ff = bracket.firstFour;
-  // West 11 seed slot
+  // West 11 seed slot (11-seed is in team2 of 6-vs-11 matchup)
   const westR64 = bracket.roundOf64.filter(m => m.region === 'West');
   const west11Matchup = westR64.find(m => m.team1?.id === 'texas' || m.team2?.id === 'texas' || m.team1?.seed === 11 || m.team2?.seed === 11);
   if (ff[0] && west11Matchup) {
-    map[ff[0].id] = { targetMatchupId: west11Matchup.id, slot: 1 };
+    map[ff[0].id] = { targetMatchupId: west11Matchup.id, slot: 2 };
   }
 
-  // Midwest 11 seed slot
+  // Midwest 11 seed slot (11-seed is in team2 of 6-vs-11 matchup)
   const midwestR64 = bracket.roundOf64.filter(m => m.region === 'Midwest');
   const midwest11Matchup = midwestR64.find(m => m.team1?.seed === 11 || m.team2?.seed === 11);
   if (ff[1] && midwest11Matchup) {
-    map[ff[1].id] = { targetMatchupId: midwest11Matchup.id, slot: 1 };
+    map[ff[1].id] = { targetMatchupId: midwest11Matchup.id, slot: 2 };
   }
 
   // Midwest 16 seed slot
