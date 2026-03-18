@@ -15,6 +15,7 @@ export default function Home() {
   const [activeMatchupId, setActiveMatchupId] = useState<string | undefined>();
   const [activeRound, setActiveRound] = useState<string>('');
   const [selectedGame, setSelectedGame] = useState<Matchup | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   const startSimulation = useCallback(async () => {
@@ -28,6 +29,7 @@ export default function Home() {
     setIsComplete(false);
     setActiveMatchupId(undefined);
     setSelectedGame(null);
+    setErrorMessage(null);
 
     abortRef.current = new AbortController();
 
@@ -94,6 +96,8 @@ export default function Home() {
 
               if (event.type === 'error') {
                 console.error('Simulation error:', event.message);
+                setErrorMessage(event.message || 'An error occurred');
+                setIsRunning(false);
               }
             } catch {
               // Ignore parse errors
@@ -200,11 +204,11 @@ export default function Home() {
               Each game is analyzed with KenPom statistics, historical upset rates, and tournament-specific
               factors to produce a realistic simulation with genuine Cinderella stories.
             </p>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8 w-full max-w-2xl">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6 w-full max-w-2xl">
               {[
                 { label: '1 Seeds', desc: 'Duke · Arizona · Michigan · Florida', color: 'text-yellow-400' },
                 { label: '68 Teams', desc: 'Full field including First Four', color: 'text-blue-400' },
-                { label: 'Claude AI', desc: 'Haiku with structured output', color: 'text-purple-400' },
+                { label: 'Gemini / Claude', desc: 'Free or paid AI provider', color: 'text-purple-400' },
                 { label: 'Live Stream', desc: 'Game-by-game results', color: 'text-emerald-400' },
               ].map(item => (
                 <div key={item.label} className="bg-gray-900/60 rounded-lg p-3 border border-gray-700/50">
@@ -213,6 +217,59 @@ export default function Home() {
                 </div>
               ))}
             </div>
+
+            {/* API key setup instructions */}
+            <div className="w-full max-w-2xl mb-6 rounded-xl border border-gray-700/60 overflow-hidden">
+              <div className="bg-gray-800/60 px-4 py-2 border-b border-gray-700/60">
+                <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Setup — Pick an AI provider</span>
+              </div>
+              <div className="grid md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-gray-700/60">
+                {/* Free option */}
+                <div className="p-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-xs font-bold text-emerald-400 uppercase tracking-wide bg-emerald-900/30 px-2 py-0.5 rounded-full border border-emerald-700/40">Free</span>
+                    <span className="text-sm font-semibold text-white">Google Gemini</span>
+                  </div>
+                  <p className="text-xs text-gray-400 mb-3 leading-relaxed">
+                    Get a free API key — no billing required. 1,500 requests/day, plenty for a full 67-game simulation.
+                  </p>
+                  <ol className="text-xs text-gray-400 space-y-1.5">
+                    <li className="flex gap-2"><span className="text-gray-600 flex-shrink-0">1.</span><span>Go to <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-blue-400 hover:underline">aistudio.google.com/app/apikey</a></span></li>
+                    <li className="flex gap-2"><span className="text-gray-600 flex-shrink-0">2.</span><span>Click <span className="text-white">Create API key</span> (free, no credit card)</span></li>
+                    <li className="flex gap-2"><span className="text-gray-600 flex-shrink-0">3.</span><span>Add to <code className="text-gray-300 bg-gray-800 px-1 rounded">.env.local</code>:</span></li>
+                  </ol>
+                  <div className="mt-2 bg-gray-900 rounded-lg p-2 border border-gray-700/50">
+                    <code className="text-xs text-emerald-300">GEMINI_API_KEY=your_key_here</code>
+                  </div>
+                </div>
+
+                {/* Paid option */}
+                <div className="p-4 opacity-80">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-xs font-bold text-blue-400 uppercase tracking-wide bg-blue-900/30 px-2 py-0.5 rounded-full border border-blue-700/40">Paid</span>
+                    <span className="text-sm font-semibold text-white">Anthropic Claude</span>
+                  </div>
+                  <p className="text-xs text-gray-400 mb-3 leading-relaxed">
+                    Uses claude-haiku-4-5. Full 67-game simulation costs ~$0.03.
+                  </p>
+                  <ol className="text-xs text-gray-400 space-y-1.5">
+                    <li className="flex gap-2"><span className="text-gray-600 flex-shrink-0">1.</span><span>Go to <a href="https://console.anthropic.com/" target="_blank" rel="noreferrer" className="text-blue-400 hover:underline">console.anthropic.com</a></span></li>
+                    <li className="flex gap-2"><span className="text-gray-600 flex-shrink-0">2.</span><span>Create an account and add billing</span></li>
+                    <li className="flex gap-2"><span className="text-gray-600 flex-shrink-0">3.</span><span>Add to <code className="text-gray-300 bg-gray-800 px-1 rounded">.env.local</code>:</span></li>
+                  </ol>
+                  <div className="mt-2 bg-gray-900 rounded-lg p-2 border border-gray-700/50">
+                    <code className="text-xs text-blue-300">ANTHROPIC_API_KEY=your_key_here</code>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {errorMessage && (
+              <div className="w-full max-w-2xl mb-4 p-3 bg-red-900/20 border border-red-700/50 rounded-lg text-xs text-red-300 leading-relaxed">
+                {errorMessage}
+              </div>
+            )}
+
             <button
               onClick={startSimulation}
               className="px-8 py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold text-base rounded-xl transition-colors shadow-lg shadow-blue-900/30"
@@ -222,6 +279,12 @@ export default function Home() {
           </div>
         ) : (
           <div className="flex flex-col gap-4">
+            {errorMessage && (
+              <div className="p-3 bg-red-900/20 border border-red-700/50 rounded-lg text-xs text-red-300 leading-relaxed">
+                <span className="font-semibold text-red-400">Error: </span>{errorMessage}
+              </div>
+            )}
+
             {/* Top info bar */}
             <div className="flex items-center gap-2 text-xs text-gray-500 flex-wrap">
               <span className="text-gray-300 font-medium">2026 NCAA Tournament</span>

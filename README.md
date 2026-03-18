@@ -1,12 +1,6 @@
 # March Madness Arena
 
-An AI-powered 2026 NCAA Tournament bracket simulation using real KenPom statistical data and Claude AI.
-
-## How It Works
-
-The app simulates the entire 68-team NCAA Tournament bracket game-by-game using Anthropic's Claude Haiku model. Results stream in real-time so you can watch the bracket unfold live.
-
-**Tournament flow:** First Four → Round of 64 → Round of 32 → Sweet 16 → Elite Eight → Final Four → Championship
+An AI-powered 2026 NCAA Tournament bracket simulation using real KenPom statistical data and your choice of AI provider.
 
 ## Setup
 
@@ -16,35 +10,50 @@ The app simulates the entire 68-team NCAA Tournament bracket game-by-game using 
 npm install
 ```
 
-### 2. Add your Anthropic API key
+### 2. Get an API key — FREE option available
+
+**Option A — Free (Google Gemini):**
+1. Go to [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)
+2. Click **Create API key** — no credit card, no billing required
+3. Free tier gives you 1,500 requests/day and 1M tokens/day — more than enough for a full 67-game simulation
 
 ```bash
 cp .env.local.example .env.local
-# Edit .env.local and add your key from https://console.anthropic.com/
+# Edit .env.local:
+GEMINI_API_KEY=your_key_here
 ```
 
-```
-ANTHROPIC_API_KEY=sk-ant-...
+**Option B — Paid (Anthropic Claude):**
+1. Go to [console.anthropic.com](https://console.anthropic.com/)
+2. Add billing and create an API key
+3. A full 67-game simulation costs roughly **$0.03** using claude-haiku-4-5
+
+```bash
+cp .env.local.example .env.local
+# Edit .env.local:
+ANTHROPIC_API_KEY=your_key_here
 ```
 
-### 3. Run the development server
+The app auto-detects which key you have — just set one and it works.
+
+### 3. Run
 
 ```bash
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) and click **Simulate Bracket**.
+Open [http://localhost:3000](http://localhost:3000) and click **Start Simulation**.
 
-## Features
+---
 
-- **68-team bracket** — Full 2026 NCAA Tournament including First Four play-in games
-- **Real KenPom data** — Adjusted efficiency margins, offensive/defensive ratings, tempo, luck factor, and strength of schedule for all teams
-- **Ensemble win probability** — 60% KenPom logistic + 25% Log5 + 15% seed-based historical rates
-- **Qualitative edge framing** — The AI receives "slight edge" / "favored" / "clear favorite" instead of raw probabilities, so it analyzes matchups rather than anchoring on numbers
-- **Tournament-specific analysis** — Elite defense weighting, tempo clash detection, luck regression signals, style clash identification
-- **Dynamic upset calibration** — Tracks upsets vs historical averages and nudges the AI when too chalky or too chaotic
-- **Live streaming** — Server-Sent Events stream each game result as it's decided
-- **Historical seed data** — 1985–2025 upset rates embedded in every game prompt
+## How It Works
+
+The app simulates the entire 68-team NCAA Tournament bracket game-by-game, streaming results in real-time. Each game goes through:
+
+1. **Ensemble win probability** — 60% KenPom logistic model + 25% Log5 + 15% seed-based historical rates
+2. **Qualitative edge framing** — probability converted to "toss-up / slight edge / favored / clear favorite" so the AI analyzes the matchup rather than anchoring on a number
+3. **AI game simulation** — prompt includes team profiles, KenPom stats, tempo analysis, defensive analysis, luck regression signals, historical seed upset rates, and venue context
+4. **Upset calibration** — running tracker compares actual upsets to historical averages and nudges the AI when the bracket is too chalky or too chaotic
 
 ## 2026 Bracket
 
@@ -63,17 +72,6 @@ Open [http://localhost:3000](http://localhost:3000) and click **Simulate Bracket
 
 ## Tech Stack
 
-- **Next.js 16** with App Router and TypeScript
-- **Anthropic SDK** (`claude-haiku-4-5`, temperature 0.7)
-- **Tailwind CSS** for styling
-- **Server-Sent Events** for real-time streaming
-
-## AI Model Details
-
-Each game uses a structured prompt including:
-- Team profiles with program tier (blueblood / power conference / mid-major / Cinderella)
-- KenPom stats with qualitative edge framing (not raw percentages)
-- Tournament-specific factors: elite defense, tempo control, style clashes, luck regression
-- Historical upset rates for the specific seed matchup
-- Running upset count vs expected for dynamic calibration
-- Venue and travel context
+- **Next.js 16** — App Router, TypeScript, Server-Sent Events
+- **Google Gemini 2.0 Flash** (free) or **Anthropic Claude Haiku 4.5** (paid)
+- **Tailwind CSS**

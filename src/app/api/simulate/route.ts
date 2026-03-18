@@ -1,6 +1,6 @@
 import type { NextRequest } from 'next/server';
 import { initializeBracket } from '@/lib/bracket';
-import { runSimulation } from '@/lib/simulation';
+import { runSimulation, getProvider } from '@/lib/simulation';
 import { SimulationEvent } from '@/types';
 
 export const runtime = 'nodejs';
@@ -8,9 +8,17 @@ export const maxDuration = 300; // 5 minutes
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export async function GET(_request: NextRequest) {
-  if (!process.env.ANTHROPIC_API_KEY) {
+  const provider = getProvider();
+
+  if (!provider) {
+    const msg = [
+      'No AI provider configured.',
+      'Option 1 (FREE): Get a Google Gemini key at https://aistudio.google.com/app/apikey — add GEMINI_API_KEY to .env.local',
+      'Option 2 (Paid): Get an Anthropic key at https://console.anthropic.com — add ANTHROPIC_API_KEY to .env.local',
+    ].join(' ');
+
     return new Response(
-      `data: ${JSON.stringify({ type: 'error', message: 'ANTHROPIC_API_KEY is not configured. Add it to your .env.local file.' })}\n\n`,
+      `data: ${JSON.stringify({ type: 'error', message: msg })}\n\n`,
       {
         headers: {
           'Content-Type': 'text/event-stream',
@@ -35,7 +43,7 @@ export async function GET(_request: NextRequest) {
 
         send({
           type: 'status',
-          message: 'Bracket initialized. Starting simulation...',
+          message: `Bracket initialized. Starting simulation with ${provider === 'gemini' ? 'Google Gemini 2.0 Flash (free)' : 'Anthropic Claude Haiku'}...`,
           bracketState: bracket,
         });
 

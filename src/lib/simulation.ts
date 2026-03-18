@@ -1,9 +1,17 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import { Team, Matchup, BracketState, RoundName, AIGameResult, SimulationEvent } from '@/types';
 import { ensembleWinProbability, getQualitativeEdge, getCalibrationNudge, isUpset } from './probability';
 import { updateBracketAfterGame } from './bracket';
 
-const client = new Anthropic();
+// Provider detection — use whichever key is available
+// Gemini is free at https://aistudio.google.com/app/apikey
+// Anthropic at https://console.anthropic.com/
+function getProvider(): 'anthropic' | 'gemini' | null {
+  if (process.env.ANTHROPIC_API_KEY) return 'anthropic';
+  if (process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_KEY) return 'gemini';
+  return null;
+}
 
 function formatTeamProfile(team: Team): string {
   const tier = team.programTier === 'blueblood' ? 'Blue Blood program'
@@ -36,9 +44,8 @@ function getDefensiveAnalysis(team1: Team, team2: Team): string {
   if (team1.kenpom.adjD <= 88) notes.push(`${team1.name} has elite defense (AdjD: ${team1.kenpom.adjD.toFixed(1)}, Top 25) — can grind out close games.`);
   if (team2.kenpom.adjD <= 88) notes.push(`${team2.name} has elite defense (AdjD: ${team2.kenpom.adjD.toFixed(1)}, Top 25) — can grind out close games.`);
 
-  // Style clash: elite offense vs elite defense
   if (team1.kenpom.adjO >= 120 && team2.kenpom.adjD <= 90) {
-    notes.push(`Style clash: ${team1.name}'s elite offense (#${team1.kenpom.rank} AdjO) vs ${team2.name}'s strong defense — treated as nearly a coin flip in March.`);
+    notes.push(`Style clash: ${team1.name}'s elite offense vs ${team2.name}'s strong defense — treated as nearly a coin flip in March.`);
   }
   if (team2.kenpom.adjO >= 120 && team1.kenpom.adjD <= 90) {
     notes.push(`Style clash: ${team2.name}'s elite offense vs ${team1.name}'s strong defense — treated as nearly a coin flip in March.`);
@@ -101,6 +108,55 @@ Pick the winner and provide 2-3 sentences of analysis. Be decisive — pick one 
 Respond with JSON only: {"winner": "EXACT team name", "reasoning": "2-3 sentence analysis"}`;
 }
 
+function parseAIResponse(text: string, team1: Team, team2: Team): AIGameResult {
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    throw new Error(`Could not parse JSON from response: ${text.slice(0, 200)}`);
+  }
+
+  const result = JSON.parse(jsonMatch[0]) as AIGameResult;
+
+  // Validate winner matches one of the two teams
+  const winnerName = result.winner.toLowerCase();
+  if (!team1.name.toLowerCase().includes(winnerName) && !team2.name.toLowerCase().includes(winnerName)) {
+    result.winner = team1.kenpom.rank < team2.kenpom.rank ? team1.name : team2.name;
+  }
+
+  return result;
+}
+
+async function simulateWithAnthropic(prompt: string, team1: Team, team2: Team): Promise<AIGameResult> {
+  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const response = await client.messages.create({
+    model: 'claude-haiku-4-5',
+    max_tokens: 400,
+    temperature: 0.7,
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  const content = response.content[0];
+  if (content.type !== 'text') throw new Error('Unexpected response type from Claude');
+  return parseAIResponse(content.text, team1, team2);
+}
+
+async function simulateWithGemini(prompt: string, team1: Team, team2: Team): Promise<AIGameResult> {
+  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_KEY || '';
+  const genAI = new GoogleGenerativeAI(apiKey);
+
+  const model = genAI.getGenerativeModel({
+    model: 'gemini-2.0-flash',
+    generationConfig: {
+      temperature: 0.7,
+      maxOutputTokens: 400,
+      responseMimeType: 'application/json',
+    },
+  });
+
+  const result = await model.generateContent(prompt);
+  const text = result.response.text();
+  return parseAIResponse(text, team1, team2);
+}
+
 export async function simulateGame(
   team1: Team,
   team2: Team,
@@ -110,36 +166,15 @@ export async function simulateGame(
   totalGames: number,
 ): Promise<AIGameResult> {
   const prompt = buildGamePrompt(team1, team2, round, venue, upsetCount, totalGames);
+  const provider = getProvider();
 
-  const response = await client.messages.create({
-    model: 'claude-haiku-4-5',
-    max_tokens: 400,
-    temperature: 0.7,
-    messages: [{ role: 'user', content: prompt }],
-  });
-
-  const content = response.content[0];
-  if (content.type !== 'text') {
-    throw new Error('Unexpected response type from Claude');
+  if (provider === 'anthropic') {
+    return simulateWithAnthropic(prompt, team1, team2);
+  } else if (provider === 'gemini') {
+    return simulateWithGemini(prompt, team1, team2);
+  } else {
+    throw new Error('No AI provider configured. Set ANTHROPIC_API_KEY or GEMINI_API_KEY in your .env.local file.');
   }
-
-  // Extract JSON from response
-  const text = content.text.trim();
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
-    throw new Error(`Could not parse JSON from response: ${text}`);
-  }
-
-  const result = JSON.parse(jsonMatch[0]) as AIGameResult;
-
-  // Validate winner is one of the two teams
-  const winnerName = result.winner.toLowerCase();
-  if (!team1.name.toLowerCase().includes(winnerName) && !team2.name.toLowerCase().includes(winnerName)) {
-    // Default to team with better KenPom if we can't parse
-    result.winner = team1.kenpom.rank < team2.kenpom.rank ? team1.name : team2.name;
-  }
-
-  return result;
 }
 
 export async function* runSimulation(
@@ -174,7 +209,6 @@ export async function* runSimulation(
     const loser = winner.id === matchup.team1.id ? matchup.team2 : matchup.team1;
 
     const matchupIsUpset = isUpset(winner, loser);
-
     const updatedBracket = updateBracketAfterGame(bracketRef, matchup.id, winner);
 
     return { winner, loser, reasoning: result.reasoning, matchupIsUpset, updatedBracket };
@@ -210,7 +244,7 @@ export async function* runSimulation(
 
   yield { type: 'round_complete', round: 'First Four', upsetCount, totalGames };
 
-  // Main bracket rounds in order
+  // Main bracket rounds
   const rounds: Array<{ key: keyof BracketState; name: RoundName }> = [
     { key: 'roundOf64', name: 'Round of 64' },
     { key: 'roundOf32', name: 'Round of 32' },
@@ -225,7 +259,6 @@ export async function* runSimulation(
     const matchups = currentBracket[key] as Matchup[];
 
     for (const matchup of matchups) {
-      // Get fresh matchup from current bracket state
       const freshMatchup = matchups.find(m => m.id === matchup.id);
       if (!freshMatchup?.team1 || !freshMatchup?.team2) continue;
 
@@ -295,3 +328,5 @@ export async function* runSimulation(
     message: `Simulation complete! ${currentBracket.champion?.name || 'Unknown'} wins the 2026 NCAA Tournament with ${upsetCount} total upsets across ${totalGames} games.`,
   };
 }
+
+export { getProvider };
