@@ -1,8 +1,9 @@
 'use client';
 
 import { useState, useRef, useCallback } from 'react';
-import { BracketState, SimulationEvent, Matchup } from '@/types';
-import { initializeBracket } from '@/lib/bracket';
+import { BracketState, SimulationEvent, Matchup, Team, RoundName } from '@/types';
+import { updateBracketAfterGame } from '@/lib/bracket';
+import { isUpset } from '@/lib/probability';
 import GameCard from '@/components/GameCard';
 import LiveFeed from '@/components/LiveFeed';
 import SimulationStats from '@/components/SimulationStats';
@@ -16,14 +17,58 @@ export default function Home() {
   const [activeRound, setActiveRound] = useState<string>('');
   const [selectedGame, setSelectedGame] = useState<Matchup | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
+  const [provider, setProvider] = useState<string>('');
+  const stopRef = useRef(false);
+  const bracketRef = useRef<BracketState | null>(null);
+
+  const pushEvent = useCallback((event: SimulationEvent) => {
+    setEvents(prev => [...prev, event]);
+  }, []);
+
+  async function simulateOneGame(
+    matchup: Matchup,
+    upsetCount: number,
+    totalGames: number,
+  ): Promise<{ winner: Team; loser: Team; reasoning: string; matchupIsUpset: boolean } | null> {
+    if (!matchup.team1 || !matchup.team2) return null;
+
+    const res = await fetch('/api/simulate-game', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        team1: matchup.team1,
+        team2: matchup.team2,
+        round: matchup.round,
+        venue: matchup.venue ?? 'TBD',
+        upsetCount,
+        totalGames,
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+
+    const result = await res.json() as { winner: string; reasoning: string; error?: string };
+    if (result.error) throw new Error(result.error);
+
+    const winnerName = result.winner.toLowerCase();
+    const winner =
+      winnerName.includes(matchup.team1.name.toLowerCase()) ||
+      matchup.team1.name.toLowerCase().includes(winnerName)
+        ? matchup.team1
+        : matchup.team2;
+    const loser = winner.id === matchup.team1.id ? matchup.team2 : matchup.team1;
+    const matchupIsUpset = isUpset(winner, loser);
+
+    return { winner, loser, reasoning: result.reasoning, matchupIsUpset };
+  }
 
   const startSimulation = useCallback(async () => {
     if (isRunning) return;
+    stopRef.current = false;
 
-    // Initialize bracket
-    const initial = initializeBracket();
-    setBracketState(initial);
     setEvents([]);
     setIsRunning(true);
     setIsComplete(false);
@@ -31,115 +76,155 @@ export default function Home() {
     setSelectedGame(null);
     setErrorMessage(null);
 
-    abortRef.current = new AbortController();
-
     try {
-      const response = await fetch('/api/simulate', {
-        signal: abortRef.current.signal,
+      // Fetch initial bracket and provider info
+      const initRes = await fetch('/api/init-bracket');
+      const { bracket: initialBracket, provider: detectedProvider } = await initRes.json() as {
+        bracket: BracketState;
+        provider: string | null;
+      };
+
+      if (!detectedProvider) {
+        setErrorMessage(
+          'No API key found. Add GROQ_API_KEY (free, console.groq.com) or GEMINI_API_KEY or ANTHROPIC_API_KEY to your environment variables.',
+        );
+        setIsRunning(false);
+        return;
+      }
+
+      setProvider(detectedProvider);
+      setBracketState(initialBracket);
+      bracketRef.current = initialBracket;
+
+      let upsetCount = 0;
+      let totalGames = 0;
+
+      pushEvent({
+        type: 'status',
+        message: `Starting simulation with ${
+          detectedProvider === 'groq' ? 'Groq Llama 3.3 70B (free)'
+          : detectedProvider === 'gemini' ? 'Google Gemini Flash Lite (free)'
+          : 'Anthropic Claude Haiku'
+        }...`,
       });
 
-      if (!response.body) throw new Error('No response body');
+      // Rounds in order
+      const roundSequence: Array<{ key: keyof BracketState; name: RoundName }> = [
+        { key: 'firstFour', name: 'First Four' },
+        { key: 'roundOf64', name: 'Round of 64' },
+        { key: 'roundOf32', name: 'Round of 32' },
+        { key: 'sweet16', name: 'Sweet 16' },
+        { key: 'eliteEight', name: 'Elite Eight' },
+        { key: 'finalFour', name: 'Final Four' },
+        { key: 'championship', name: 'Championship' },
+      ];
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
+      for (const { key, name } of roundSequence) {
+        if (stopRef.current) break;
+        setActiveRound(name);
+        pushEvent({ type: 'status', message: `Simulating ${name}...`, round: name });
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+        const current = bracketRef.current!;
+        const rawMatchups = key === 'championship'
+          ? [current.championship]
+          : (current[key] as Matchup[]);
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
+        for (const matchup of rawMatchups) {
+          if (stopRef.current) break;
 
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const event: SimulationEvent = JSON.parse(line.slice(6));
-              setEvents(prev => [...prev, event]);
+          // Get fresh version from current bracket
+          const fresh = key === 'championship'
+            ? bracketRef.current!.championship
+            : (bracketRef.current![key] as Matchup[]).find(m => m.id === matchup.id);
 
-              if (event.bracketState) {
-                setBracketState(event.bracketState);
-              }
+          if (!fresh?.team1 || !fresh?.team2) continue;
 
-              if (event.matchupId) {
-                setActiveMatchupId(event.matchupId);
-              }
+          setActiveMatchupId(fresh.id);
 
-              if (event.round) {
-                setActiveRound(event.round);
-              }
+          try {
+            const result = await simulateOneGame(fresh, upsetCount, totalGames);
+            if (!result) continue;
 
-              if (event.type === 'game_result' && event.bracketState) {
-                // Update the selected game reasoning if it's the active one
-                const allMatchups = [
-                  ...event.bracketState.firstFour,
-                  ...event.bracketState.roundOf64,
-                  ...event.bracketState.roundOf32,
-                  ...event.bracketState.sweet16,
-                  ...event.bracketState.eliteEight,
-                  ...event.bracketState.finalFour,
-                  event.bracketState.championship,
-                ];
-                const completedGame = allMatchups.find(m => m.id === event.matchupId);
-                if (completedGame) {
-                  (completedGame as Matchup).reasoning = event.reasoning;
-                  (completedGame as Matchup).isUpset = event.isUpset;
-                }
-              }
+            const { winner, loser, reasoning, matchupIsUpset } = result;
 
-              if (event.type === 'simulation_complete') {
-                setIsComplete(true);
-                setIsRunning(false);
-                setActiveMatchupId(undefined);
-              }
+            // Update bracket
+            const updatedBracket = updateBracketAfterGame(bracketRef.current!, fresh.id, winner);
+            if (key === 'championship') updatedBracket.champion = winner;
+            bracketRef.current = updatedBracket;
+            setBracketState({ ...updatedBracket });
 
-              if (event.type === 'error') {
-                console.error('Simulation error:', event.message);
-                setErrorMessage(event.message || 'An error occurred');
-                setIsRunning(false);
-              }
-            } catch {
-              // Ignore parse errors
+            totalGames++;
+            if (matchupIsUpset) upsetCount++;
+
+            pushEvent({
+              type: 'game_result',
+              matchupId: fresh.id,
+              winner,
+              loser,
+              reasoning,
+              isUpset: matchupIsUpset,
+              round: name,
+              upsetCount,
+              totalGames,
+              bracketState: updatedBracket,
+            });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            pushEvent({ type: 'error', message: `${fresh.team1.name} vs ${fresh.team2.name}: ${msg}` });
+            // If it's a quota/auth error, stop entirely
+            if (msg.includes('quota') || msg.includes('API key') || msg.includes('401') || msg.includes('403')) {
+              setErrorMessage(msg);
+              stopRef.current = true;
+              break;
             }
           }
         }
+
+        if (!stopRef.current) {
+          pushEvent({ type: 'round_complete', round: name, upsetCount, totalGames });
+        }
       }
-    } catch (error) {
-      if ((error as Error).name !== 'AbortError') {
-        console.error('Simulation failed:', error);
+
+      if (!stopRef.current) {
+        const champion = bracketRef.current?.champion;
+        pushEvent({
+          type: 'simulation_complete',
+          upsetCount,
+          totalGames,
+          bracketState: bracketRef.current ?? undefined,
+          message: `${champion?.name ?? 'Unknown'} wins the 2026 NCAA Tournament! ${upsetCount} upsets across ${totalGames} games.`,
+        });
+        setIsComplete(true);
       }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setErrorMessage(msg);
     } finally {
       setIsRunning(false);
+      setActiveMatchupId(undefined);
     }
-  }, [isRunning]);
+  }, [isRunning, pushEvent]);
 
   const stopSimulation = useCallback(() => {
-    abortRef.current?.abort();
+    stopRef.current = true;
     setIsRunning(false);
   }, []);
 
-  const getMatchupsWithReasoning = (matchups: Matchup[], eventsData: SimulationEvent[]): Matchup[] => {
+  const getMatchupsWithReasoning = (matchups: Matchup[]): Matchup[] => {
     return matchups.map(m => {
-      const event = eventsData.find(e => e.matchupId === m.id && e.type === 'game_result');
-      if (event) {
-        return { ...m, reasoning: event.reasoning, isUpset: event.isUpset };
-      }
+      const event = events.find(e => e.matchupId === m.id && e.type === 'game_result');
+      if (event) return { ...m, reasoning: event.reasoning, isUpset: event.isUpset };
       return m;
     });
   };
 
   const bracket = bracketState;
-  const currentEvents = events;
-
-  const r64WithReasoning = bracket ? getMatchupsWithReasoning(bracket.roundOf64, currentEvents) : [];
-  const r32WithReasoning = bracket ? getMatchupsWithReasoning(bracket.roundOf32, currentEvents) : [];
-  const s16WithReasoning = bracket ? getMatchupsWithReasoning(bracket.sweet16, currentEvents) : [];
-  const eeWithReasoning = bracket ? getMatchupsWithReasoning(bracket.eliteEight, currentEvents) : [];
-  const ffWithReasoning = bracket ? getMatchupsWithReasoning(bracket.finalFour, currentEvents) : [];
-  const champWithReasoning = bracket
-    ? getMatchupsWithReasoning([bracket.championship], currentEvents)[0]
-    : null;
+  const r64 = bracket ? getMatchupsWithReasoning(bracket.roundOf64) : [];
+  const r32 = bracket ? getMatchupsWithReasoning(bracket.roundOf32) : [];
+  const s16 = bracket ? getMatchupsWithReasoning(bracket.sweet16) : [];
+  const ee = bracket ? getMatchupsWithReasoning(bracket.eliteEight) : [];
+  const ff = bracket ? getMatchupsWithReasoning(bracket.finalFour) : [];
+  const champ = bracket ? getMatchupsWithReasoning([bracket.championship])[0] : null;
 
   return (
     <div className="min-h-screen bg-gray-950 text-white">
@@ -155,36 +240,29 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-3">
+            {provider && isRunning && (
+              <span className="text-xs text-gray-500">{provider === 'groq' ? 'Groq Llama 3.3' : provider === 'gemini' ? 'Gemini Flash Lite' : 'Claude Haiku'}</span>
+            )}
             {activeRound && isRunning && (
               <span className="text-xs text-blue-400 animate-pulse">{activeRound}</span>
             )}
             {isComplete && bracket?.champion && (
               <span className="text-xs text-yellow-400 font-semibold">
-                Champion: {bracket.champion.name}
+                🏆 {bracket.champion.name}
               </span>
             )}
-
             {!isRunning && !isComplete && (
-              <button
-                onClick={startSimulation}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-semibold text-sm rounded-lg transition-colors"
-              >
+              <button onClick={startSimulation} className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-semibold text-sm rounded-lg transition-colors">
                 Simulate Bracket
               </button>
             )}
             {isRunning && (
-              <button
-                onClick={stopSimulation}
-                className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white font-semibold text-sm rounded-lg transition-colors"
-              >
+              <button onClick={stopSimulation} className="px-4 py-2 bg-red-700 hover:bg-red-600 text-white font-semibold text-sm rounded-lg transition-colors">
                 Stop
               </button>
             )}
             {isComplete && (
-              <button
-                onClick={startSimulation}
-                className="px-4 py-2 bg-emerald-700 hover:bg-emerald-600 text-white font-semibold text-sm rounded-lg transition-colors"
-              >
+              <button onClick={startSimulation} className="px-4 py-2 bg-emerald-700 hover:bg-emerald-600 text-white font-semibold text-sm rounded-lg transition-colors">
                 Simulate Again
               </button>
             )}
@@ -192,24 +270,24 @@ export default function Home() {
         </div>
       </header>
 
-      {/* Main layout */}
       <div className="max-w-[1800px] mx-auto px-2 py-4">
         {!bracket ? (
-          /* Landing state */
+          /* Landing */
           <div className="flex flex-col items-center justify-center min-h-[60vh] text-center px-4">
             <div className="text-6xl mb-4">🏆</div>
             <h2 className="text-3xl font-bold text-white mb-3">2026 NCAA Tournament Simulation</h2>
             <p className="text-gray-400 max-w-2xl mb-6 leading-relaxed">
-              Watch the entire NCAA Tournament bracket unfold in real-time, powered by Claude AI.
+              Watch the entire NCAA Tournament bracket unfold in real-time, powered by AI.
               Each game is analyzed with KenPom statistics, historical upset rates, and tournament-specific
               factors to produce a realistic simulation with genuine Cinderella stories.
             </p>
+
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6 w-full max-w-2xl">
               {[
                 { label: '1 Seeds', desc: 'Duke · Arizona · Michigan · Florida', color: 'text-yellow-400' },
                 { label: '68 Teams', desc: 'Full field including First Four', color: 'text-blue-400' },
                 { label: 'Groq / Claude', desc: 'Free or paid AI provider', color: 'text-purple-400' },
-                { label: 'Live Stream', desc: 'Game-by-game results', color: 'text-emerald-400' },
+                { label: 'Live Results', desc: 'Game-by-game with reasoning', color: 'text-emerald-400' },
               ].map(item => (
                 <div key={item.label} className="bg-gray-900/60 rounded-lg p-3 border border-gray-700/50">
                   <div className={`text-sm font-bold ${item.color}`}>{item.label}</div>
@@ -218,64 +296,44 @@ export default function Home() {
               ))}
             </div>
 
-            {/* API key setup instructions */}
+            {/* Provider setup */}
             <div className="w-full max-w-2xl mb-6 rounded-xl border border-gray-700/60 overflow-hidden">
               <div className="bg-gray-800/60 px-4 py-2 border-b border-gray-700/60">
                 <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Setup — Pick an AI provider</span>
               </div>
               <div className="grid md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-gray-700/60">
-                {/* Groq - Best free option */}
                 <div className="p-4">
                   <div className="flex items-center gap-2 mb-2">
                     <span className="text-xs font-bold text-emerald-400 uppercase tracking-wide bg-emerald-900/30 px-2 py-0.5 rounded-full border border-emerald-700/40">Free ★ Best</span>
                   </div>
                   <div className="text-sm font-semibold text-white mb-2">Groq</div>
-                  <p className="text-xs text-gray-400 mb-3 leading-relaxed">
-                    No credit card. ~30 req/min. Full 67-game sim in under 3 minutes.
-                  </p>
+                  <p className="text-xs text-gray-400 mb-3 leading-relaxed">No credit card. Fast. Full sim in ~2 min.</p>
                   <ol className="text-xs text-gray-400 space-y-1.5">
-                    <li className="flex gap-2"><span className="text-gray-600 flex-shrink-0">1.</span><span>Go to <a href="https://console.groq.com" target="_blank" rel="noreferrer" className="text-blue-400 hover:underline">console.groq.com</a></span></li>
-                    <li className="flex gap-2"><span className="text-gray-600 flex-shrink-0">2.</span><span>Sign up free, create an API Key</span></li>
-                    <li className="flex gap-2"><span className="text-gray-600 flex-shrink-0">3.</span><span>Add to <code className="text-gray-300 bg-gray-800 px-1 rounded">.env.local</code>:</span></li>
+                    <li className="flex gap-2"><span className="text-gray-600 flex-shrink-0">1.</span><span><a href="https://console.groq.com" target="_blank" rel="noreferrer" className="text-blue-400 hover:underline">console.groq.com</a> → sign up free</span></li>
+                    <li className="flex gap-2"><span className="text-gray-600 flex-shrink-0">2.</span><span>Create API Key</span></li>
+                    <li className="flex gap-2"><span className="text-gray-600 flex-shrink-0">3.</span><span>Set env var <code className="text-gray-300 bg-gray-800 px-1 rounded">GROQ_API_KEY</code></span></li>
                   </ol>
-                  <div className="mt-2 bg-gray-900 rounded-lg p-2 border border-gray-700/50">
-                    <code className="text-xs text-emerald-300">GROQ_API_KEY=your_key_here</code>
-                  </div>
                 </div>
-
-                {/* Gemini */}
                 <div className="p-4 opacity-75">
                   <div className="flex items-center gap-2 mb-2">
                     <span className="text-xs font-bold text-yellow-500 uppercase tracking-wide bg-yellow-900/20 px-2 py-0.5 rounded-full border border-yellow-700/40">Free (limited)</span>
                   </div>
                   <div className="text-sm font-semibold text-white mb-2">Google Gemini</div>
-                  <p className="text-xs text-gray-400 mb-3 leading-relaxed">
-                    Free key from Google AI Studio. ~20 req/day on free tier.
-                  </p>
-                  <ol className="text-xs text-gray-400 space-y-1.5">
-                    <li className="flex gap-2"><span className="text-gray-600 flex-shrink-0">1.</span><span><a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-blue-400 hover:underline">aistudio.google.com/app/apikey</a></span></li>
-                    <li className="flex gap-2"><span className="text-gray-600 flex-shrink-0">2.</span><span>Create API key, no billing needed</span></li>
-                  </ol>
-                  <div className="mt-2 bg-gray-900 rounded-lg p-2 border border-gray-700/50">
-                    <code className="text-xs text-yellow-300">GEMINI_API_KEY=your_key_here</code>
+                  <p className="text-xs text-gray-400 mb-3 leading-relaxed">~20 req/day free tier.</p>
+                  <div className="text-xs text-gray-400">
+                    <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-blue-400 hover:underline">aistudio.google.com/app/apikey</a>
+                    <div className="mt-2">Set <code className="text-gray-300 bg-gray-800 px-1 rounded">GEMINI_API_KEY</code></div>
                   </div>
                 </div>
-
-                {/* Anthropic */}
                 <div className="p-4 opacity-75">
                   <div className="flex items-center gap-2 mb-2">
-                    <span className="text-xs font-bold text-blue-400 uppercase tracking-wide bg-blue-900/30 px-2 py-0.5 rounded-full border border-blue-700/40">Paid</span>
+                    <span className="text-xs font-bold text-blue-400 uppercase tracking-wide bg-blue-900/30 px-2 py-0.5 rounded-full border border-blue-700/40">Paid ~$0.03</span>
                   </div>
                   <div className="text-sm font-semibold text-white mb-2">Anthropic Claude</div>
-                  <p className="text-xs text-gray-400 mb-3 leading-relaxed">
-                    Claude Haiku. Full 67-game sim costs ~$0.03.
-                  </p>
-                  <ol className="text-xs text-gray-400 space-y-1.5">
-                    <li className="flex gap-2"><span className="text-gray-600 flex-shrink-0">1.</span><span><a href="https://console.anthropic.com/" target="_blank" rel="noreferrer" className="text-blue-400 hover:underline">console.anthropic.com</a></span></li>
-                    <li className="flex gap-2"><span className="text-gray-600 flex-shrink-0">2.</span><span>Create account, add billing</span></li>
-                  </ol>
-                  <div className="mt-2 bg-gray-900 rounded-lg p-2 border border-gray-700/50">
-                    <code className="text-xs text-blue-300">ANTHROPIC_API_KEY=your_key_here</code>
+                  <p className="text-xs text-gray-400 mb-3 leading-relaxed">Claude Haiku, ~$0.03 per full sim.</p>
+                  <div className="text-xs text-gray-400">
+                    <a href="https://console.anthropic.com/" target="_blank" rel="noreferrer" className="text-blue-400 hover:underline">console.anthropic.com</a>
+                    <div className="mt-2">Set <code className="text-gray-300 bg-gray-800 px-1 rounded">ANTHROPIC_API_KEY</code></div>
                   </div>
                 </div>
               </div>
@@ -302,19 +360,17 @@ export default function Home() {
               </div>
             )}
 
-            {/* Top info bar */}
+            {/* Info bar */}
             <div className="flex items-center gap-2 text-xs text-gray-500 flex-wrap">
               <span className="text-gray-300 font-medium">2026 NCAA Tournament</span>
               <span>·</span>
-              <span>First Four: Dayton, OH · Mar 17-18</span>
-              <span>·</span>
-              <span>First Round: Mar 19-20</span>
+              <span>First Four: Dayton, OH</span>
               <span>·</span>
               <span>Final Four & Championship: Indianapolis, IN</span>
               {isRunning && (
                 <>
                   <span>·</span>
-                  <span className="text-blue-400 animate-pulse">● Simulating {activeRound}</span>
+                  <span className="text-blue-400 animate-pulse">● {activeRound}</span>
                 </>
               )}
             </div>
@@ -322,22 +378,11 @@ export default function Home() {
             {/* First Four */}
             {bracket.firstFour.some(m => m.team1 || m.team2) && (
               <div className="bg-gray-900/40 rounded-xl border border-gray-700/40 p-3">
-                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
-                  First Four — Dayton, OH
-                </h3>
+                <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">First Four — Dayton, OH</h3>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                  {getMatchupsWithReasoning(bracket.firstFour, currentEvents).map(matchup => (
-                    <div
-                      key={matchup.id}
-                      className="cursor-pointer"
-                      onClick={() => setSelectedGame(selectedGame?.id === matchup.id ? null : matchup)}
-                    >
-                      <GameCard
-                        matchup={matchup}
-                        isActive={matchup.id === activeMatchupId}
-                        showReasoning={selectedGame?.id === matchup.id}
-                        size="sm"
-                      />
+                  {getMatchupsWithReasoning(bracket.firstFour).map(matchup => (
+                    <div key={matchup.id} className="cursor-pointer" onClick={() => setSelectedGame(selectedGame?.id === matchup.id ? null : matchup)}>
+                      <GameCard matchup={matchup} isActive={matchup.id === activeMatchupId} showReasoning={selectedGame?.id === matchup.id} size="sm" />
                     </div>
                   ))}
                 </div>
@@ -346,46 +391,26 @@ export default function Home() {
 
             {/* Main bracket */}
             <div className="grid grid-cols-1 xl:grid-cols-[1fr_200px_1fr] gap-3">
-              {/* Left side: East & South */}
+              {/* Left: East & South */}
               <div className="space-y-3">
                 {(['East', 'South'] as const).map(region => {
-                  const regionR64 = r64WithReasoning.filter(m => m.region === region);
-                  const regionR32 = r32WithReasoning.filter(m => m.region === region);
-                  const regionS16 = s16WithReasoning.filter(m => m.region === region);
-                  const regionEE = eeWithReasoning.filter(m => m.region === region);
-
-                  const regionColors = {
-                    East: 'text-blue-400 border-blue-800/40',
-                    South: 'text-orange-400 border-orange-800/40',
-                  };
-
+                  const regionColors = { East: 'text-blue-400', South: 'text-orange-400' };
                   return (
                     <div key={region} className="bg-gray-900/30 rounded-xl border border-gray-800/50 p-3">
-                      <h3 className={`text-sm font-bold ${regionColors[region].split(' ')[0]} mb-2`}>
-                        {region} Region
-                      </h3>
+                      <h3 className={`text-sm font-bold ${regionColors[region]} mb-2`}>{region} Region</h3>
                       <div className="grid grid-cols-4 gap-2">
                         {[
-                          { matchups: regionR64, label: 'R64' },
-                          { matchups: regionR32, label: 'R32' },
-                          { matchups: regionS16, label: 'S16' },
-                          { matchups: regionEE, label: 'E8' },
+                          { matchups: r64.filter(m => m.region === region), label: 'R64' },
+                          { matchups: r32.filter(m => m.region === region), label: 'R32' },
+                          { matchups: s16.filter(m => m.region === region), label: 'S16' },
+                          { matchups: ee.filter(m => m.region === region), label: 'E8' },
                         ].map(({ matchups, label }) => (
                           <div key={label} className="flex flex-col gap-1">
                             <span className="text-xs text-gray-600 text-center">{label}</span>
                             <div className="flex flex-col gap-1">
                               {matchups.map(matchup => (
-                                <div
-                                  key={matchup.id}
-                                  className="cursor-pointer"
-                                  onClick={() => setSelectedGame(selectedGame?.id === matchup.id ? null : matchup)}
-                                >
-                                  <GameCard
-                                    matchup={matchup}
-                                    isActive={matchup.id === activeMatchupId}
-                                    showReasoning={selectedGame?.id === matchup.id}
-                                    size="sm"
-                                  />
+                                <div key={matchup.id} className="cursor-pointer" onClick={() => setSelectedGame(selectedGame?.id === matchup.id ? null : matchup)}>
+                                  <GameCard matchup={matchup} isActive={matchup.id === activeMatchupId} showReasoning={selectedGame?.id === matchup.id} size="sm" />
                                 </div>
                               ))}
                             </div>
@@ -397,52 +422,28 @@ export default function Home() {
                 })}
               </div>
 
-              {/* Center: Final Four & Championship */}
+              {/* Center: Final Four + Championship */}
               <div className="flex flex-col items-center justify-center gap-3">
                 <div className="w-full">
-                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide text-center mb-2">
-                    Final Four
-                  </h3>
+                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide text-center mb-2">Final Four</h3>
                   <div className="space-y-2">
-                    {ffWithReasoning.map(matchup => (
-                      <div
-                        key={matchup.id}
-                        className="cursor-pointer"
-                        onClick={() => setSelectedGame(selectedGame?.id === matchup.id ? null : matchup)}
-                      >
-                        <GameCard
-                          matchup={matchup}
-                          isActive={matchup.id === activeMatchupId}
-                          showReasoning={selectedGame?.id === matchup.id}
-                          size="md"
-                        />
+                    {ff.map(matchup => (
+                      <div key={matchup.id} className="cursor-pointer" onClick={() => setSelectedGame(selectedGame?.id === matchup.id ? null : matchup)}>
+                        <GameCard matchup={matchup} isActive={matchup.id === activeMatchupId} showReasoning={selectedGame?.id === matchup.id} size="md" />
                       </div>
                     ))}
                   </div>
                 </div>
 
-                {/* Championship */}
                 <div className="w-full">
-                  <h3 className="text-xs font-semibold text-yellow-600 uppercase tracking-wide text-center mb-2">
-                    Championship
-                  </h3>
-                  {champWithReasoning && (
-                    <div
-                      className="cursor-pointer"
-                      onClick={() => setSelectedGame(selectedGame?.id === champWithReasoning.id ? null : champWithReasoning)}
-                    >
-                      <div className={`rounded-xl border-2 p-1 ${champWithReasoning.winner ? 'border-yellow-500/60 bg-yellow-900/10' : 'border-gray-600/50'}`}>
-                        <GameCard
-                          matchup={champWithReasoning}
-                          isActive={champWithReasoning.id === activeMatchupId}
-                          showReasoning={selectedGame?.id === champWithReasoning.id}
-                          size="md"
-                        />
+                  <h3 className="text-xs font-semibold text-yellow-600 uppercase tracking-wide text-center mb-2">Championship</h3>
+                  {champ && (
+                    <div className="cursor-pointer" onClick={() => setSelectedGame(selectedGame?.id === champ.id ? null : champ)}>
+                      <div className={`rounded-xl border-2 p-1 ${champ.winner ? 'border-yellow-500/60 bg-yellow-900/10' : 'border-gray-600/50'}`}>
+                        <GameCard matchup={champ} isActive={champ.id === activeMatchupId} showReasoning={selectedGame?.id === champ.id} size="md" />
                       </div>
                     </div>
                   )}
-
-                  {/* Champion trophy */}
                   {bracket.champion && (
                     <div className="mt-3 text-center p-3 bg-yellow-900/20 rounded-lg border border-yellow-700/40">
                       <div className="text-2xl mb-1">🏆</div>
@@ -452,53 +453,32 @@ export default function Home() {
                   )}
                 </div>
 
-                {/* Indianapolis info */}
                 <div className="text-center">
                   <p className="text-xs text-gray-600">Lucas Oil Stadium</p>
                   <p className="text-xs text-gray-700">Indianapolis, IN</p>
                 </div>
               </div>
 
-              {/* Right side: West & Midwest */}
+              {/* Right: West & Midwest */}
               <div className="space-y-3">
                 {(['West', 'Midwest'] as const).map(region => {
-                  const regionR64 = r64WithReasoning.filter(m => m.region === region);
-                  const regionR32 = r32WithReasoning.filter(m => m.region === region);
-                  const regionS16 = s16WithReasoning.filter(m => m.region === region);
-                  const regionEE = eeWithReasoning.filter(m => m.region === region);
-
-                  const regionColors = {
-                    West: 'text-emerald-400',
-                    Midwest: 'text-purple-400',
-                  };
-
+                  const regionColors = { West: 'text-emerald-400', Midwest: 'text-purple-400' };
                   return (
                     <div key={region} className="bg-gray-900/30 rounded-xl border border-gray-800/50 p-3">
-                      <h3 className={`text-sm font-bold ${regionColors[region]} mb-2`}>
-                        {region} Region
-                      </h3>
+                      <h3 className={`text-sm font-bold ${regionColors[region]} mb-2`}>{region} Region</h3>
                       <div className="grid grid-cols-4 gap-2">
                         {[
-                          { matchups: regionEE, label: 'E8' },
-                          { matchups: regionS16, label: 'S16' },
-                          { matchups: regionR32, label: 'R32' },
-                          { matchups: regionR64, label: 'R64' },
+                          { matchups: ee.filter(m => m.region === region), label: 'E8' },
+                          { matchups: s16.filter(m => m.region === region), label: 'S16' },
+                          { matchups: r32.filter(m => m.region === region), label: 'R32' },
+                          { matchups: r64.filter(m => m.region === region), label: 'R64' },
                         ].map(({ matchups, label }) => (
                           <div key={label} className="flex flex-col gap-1">
                             <span className="text-xs text-gray-600 text-center">{label}</span>
                             <div className="flex flex-col gap-1">
                               {matchups.map(matchup => (
-                                <div
-                                  key={matchup.id}
-                                  className="cursor-pointer"
-                                  onClick={() => setSelectedGame(selectedGame?.id === matchup.id ? null : matchup)}
-                                >
-                                  <GameCard
-                                    matchup={matchup}
-                                    isActive={matchup.id === activeMatchupId}
-                                    showReasoning={selectedGame?.id === matchup.id}
-                                    size="sm"
-                                  />
+                                <div key={matchup.id} className="cursor-pointer" onClick={() => setSelectedGame(selectedGame?.id === matchup.id ? null : matchup)}>
+                                  <GameCard matchup={matchup} isActive={matchup.id === activeMatchupId} showReasoning={selectedGame?.id === matchup.id} size="sm" />
                                 </div>
                               ))}
                             </div>
@@ -511,14 +491,10 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Bottom panel: Live feed + Stats */}
+            {/* Bottom */}
             <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4 mt-2">
-              <LiveFeed events={currentEvents} isRunning={isRunning} />
-              <SimulationStats
-                events={currentEvents}
-                bracketState={bracket}
-                isComplete={isComplete}
-              />
+              <LiveFeed events={events} isRunning={isRunning} />
+              <SimulationStats events={events} bracketState={bracket} isComplete={isComplete} />
             </div>
           </div>
         )}

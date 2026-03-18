@@ -1,0 +1,10 @@
+{
+  "functions": {
+    "src/app/api/simulate-game/route.ts": {
+      "maxDuration": 30
+    },
+    "src/app/api/init-bracket/route.ts": {
+      "maxDuration": 10
+    }
+  }
+}
